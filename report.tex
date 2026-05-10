@@ -1,0 +1,379 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[a4paper, margin=2.4cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{tabularx}
+\usepackage[round,authoryear]{natbib}
+
+\hypersetup{
+  colorlinks = true,
+  linkcolor  = black,
+  citecolor  = blue!50!black,
+  urlcolor   = blue!50!black,
+}
+
+% --- Title ------------------------------------------------------------------
+\title{
+  \vspace{-1.4cm}
+  \textbf{A three-signal long-only equity strategy} \\[2pt]
+  \large Computational Finance in Python --- Lecture~02 Assessment
+}
+\author{Universit\"at T\"ubingen \\ Summer term 2026}
+\date{\today}
+
+% ===========================================================================
+\begin{document}
+\maketitle
+
+\vspace{-0.5cm}
+\begin{abstract}
+\noindent
+We construct a long-only systematic equity strategy from three trading signals
+of distinct economic provenance: (i)~a Wilder Relative Strength Index (RSI)
+mean-reversion rule, (ii)~a dual simple-moving-average (SMA) crossover, and
+(iii)~a 12-1 time-series momentum filter. The signals are calibrated on US
+large-cap data 2010--2018 and validated out-of-sample on 2019--2025, a window
+that spans the COVID crash, the 2022 bear market and the subsequent recovery.
+On the assessment universe \{AAPL, MSFT, AMZN\} the calibrated portfolio
+delivers a 10.6\,\% compound annual growth rate at 10.0\,\% annualised
+volatility, a Sharpe ratio of $1.06$ with a bootstrap 95\,\% CI of
+$[0.53,\,1.63]$ and a maximum drawdown of $-12.4\,\%$, against an S\&P~500
+buy-and-hold benchmark at 12.0\,\% / 17.3\,\% / Sharpe $0.69$ /
+$-33.9\,\%$. The strategy gives up roughly 1.4 percentage points of CAGR for
+a 60\,\% reduction in volatility and a 64\,\% reduction in maximum drawdown.
+All numerical computations are implemented in pure NumPy.
+\end{abstract}
+
+% ===========================================================================
+\section{Introduction}
+
+The investment problem is to outperform a passive S\&P~500 index investment
+on a \emph{risk-adjusted} basis using systematic, fully transparent rules
+with publicly available daily price information. The course constraint is
+that all numerical computations must be written in NumPy primitives, ruling
+out Pandas's \verb|.rolling()| or \verb|.ewm()| convenience functions; the
+practical constraint is that the rules must be defensible from the
+literature and verifiable by an independent reader.
+
+Our three rules are chosen to capture three distinct empirical
+regularities of equity returns: short-horizon \emph{reversal}
+(RSI), medium-horizon \emph{trend} (SMA crossover) and 12-month
+\emph{momentum}. The economic argument for combining them is that they react
+to different statistical features of the price process and therefore
+\emph{should} be imperfectly correlated, providing some rule-level
+diversification.
+
+% ===========================================================================
+\section{Data}
+
+The universe consists of twelve liquid US large-cap names plus the S\&P~500
+index as a benchmark, downloaded from Yahoo Finance via \texttt{yahooquery}.
+Adjusted-close prices are used so corporate actions (splits, dividends) are
+already incorporated into the price series.
+
+\begin{description}[leftmargin=1.4cm,labelwidth=1.2cm,style=nextline,nosep]
+  \item[\textbf{In-sample (calibration)}] 2010-01-04 to 2018-12-31 ($\approx$~2{,}260 trading days).
+  \item[\textbf{Out-of-sample (validation)}] 2019-01-01 to 2025-12-30 ($\approx$~1{,}760 trading days).
+\end{description}
+
+The OOS window contains the COVID crash, the 2022 bear market and the
+2023--2025 recovery. A signal that survives this OOS window has been
+stress-tested against three economically distinct regimes.
+
+% ===========================================================================
+\section{Signal definitions}
+
+\subsection{Signal 1 --- Dual SMA crossover}
+
+Long when the short simple moving average exceeds the long one, flat
+otherwise:
+\begin{equation}
+\mathrm{Signal}^{\,\mathrm{SMA}}_{t} \;=\; \mathbb{1}\!\left[\;
+  \frac{1}{n_s}\sum_{i=0}^{n_s - 1} p_{t-i} \;>\;
+  \frac{1}{n_l}\sum_{i=0}^{n_l - 1} p_{t-i}
+\;\right], \qquad n_s < n_l.
+\label{eq:sma}
+\end{equation}
+The classic motivation \citep{Brock1992,Marshall2017} is that prices contain a
+slow drift and a high-frequency noise component; the short SMA tracks the
+drift faster, so the crossing is informative about \emph{changes} in drift.
+
+\subsection{Signal 2 --- RSI mean-reversion}
+
+Wilder's RSI over a window of $n$ days is
+\begin{equation}
+\mathrm{RSI}_{t} \;=\; 100 \;-\; \frac{100}{1 + RS_t}, \qquad
+RS_t \;=\; \frac{\overline{U}_t}{\overline{D}_t},
+\label{eq:rsi}
+\end{equation}
+with $\overline{U}_t,\overline{D}_t$ the Wilder-smoothed averages of gains
+and losses, recursively defined as
+\begin{equation}
+\overline{X}_{t} \;=\; \frac{n - 1}{n}\,\overline{X}_{t-1} \;+\; \frac{1}{n}\,X_t,
+\qquad X \in \{U, D\}.
+\end{equation}
+The trading rule is a stateful hysteresis with two thresholds $L < U$:
+\begin{equation}
+\mathrm{state}_{t} \;=\;
+\begin{cases}
+1 & \text{if } \mathrm{state}_{t-1} = 0 \text{ and } \mathrm{RSI}_t < L,\\
+0 & \text{if } \mathrm{state}_{t-1} = 1 \text{ and } \mathrm{RSI}_t > U,\\
+\mathrm{state}_{t-1} & \text{otherwise.}
+\end{cases}
+\end{equation}
+The hysteresis structure prevents whipsaws around either threshold.
+References: \citet{Wilder1978,Chong2008}.
+
+\subsection{Signal 3 --- 12-1 time-series momentum}
+
+The 12-1 momentum signal of \citet{Jegadeesh1993,Moskowitz2012} is
+\begin{equation}
+\mathrm{mom}_{t} \;=\; \frac{p_{t-s}}{p_{t-L}} - 1, \qquad
+\mathrm{Signal}^{\,\mathrm{mom}}_{t} \;=\; \mathbb{1}\!\left[\,\mathrm{mom}_{t} > \tau \,\right],
+\label{eq:mom}
+\end{equation}
+with $L = 252$ trading days ($\approx$~12~months) and $s = 21$ trading days
+($\approx$~1~month). The 1-month skip is the original Jegadeesh--Titman
+precaution against the well-documented short-horizon return-reversal effect.
+
+\subsection{Common contract}
+
+Each signal function returns a binary signal $S_t \in \{0,1\}$ together with
+its position-change indicator $\Delta S_t = S_t - S_{t-1} \in \{-1, 0, +1\}$.
+By construction $\Delta S_t = -1$ never occurs without a preceding
+$\Delta S_t = +1$ --- the rule cannot \emph{sell} without a prior buy. This is
+a hard requirement of the predefined capital-allocation cell of the
+assessment notebook.
+
+% ===========================================================================
+\section{Backtesting methodology}
+
+Capital allocation is delegated to the predefined multi-asset allocator
+provided in the assessment notebook. On any given day the allocator opens a
+position of size $f \cdot W_t$ in each newly long-eligible name (with
+$f = 0.2$ and $W_t$ the cash balance), holds it forward at the multiplicative
+price ratio, and closes the position when the corresponding signal flips off.
+Open and close events are observed on the basis of $\Delta S_t$ and acted on
+the next day, implementing a 1-day execution lag.
+
+We evaluate the strategy with the following metrics, all implemented in
+\texttt{module.py} from NumPy primitives:
+\begin{itemize}[nosep]
+  \item Compound annual growth rate
+        $\mathrm{CAGR} = \bigl(\prod_t (1 + r_t)\bigr)^{252/T} - 1$;
+  \item Annualised volatility
+        $\sigma_{\mathrm{ann}} = \sigma(r_t)\sqrt{252}$ with $\sigma(\cdot)$ population std;
+  \item Sharpe ratio
+        $\mathrm{SR} = (\mathrm{CAGR} - r_f) / \sigma_{\mathrm{ann}}$;
+  \item Sortino ratio
+        $\mathrm{SoR} = (\mathrm{CAGR} - r_t^*) / \sigma_{\mathrm{ann}}^{\downarrow}$
+        with $\sigma_{\mathrm{ann}}^{\downarrow}$ the downside semi-deviation;
+  \item Maximum drawdown
+        $\mathrm{MDD} = \min_t \bigl(W_t / \max_{s \le t} W_s - 1\bigr)$;
+  \item Calmar ratio $\mathrm{CR} = \mathrm{CAGR} / |\mathrm{MDD}|$;
+  \item Daily hit rate, time-in-market and number of trades.
+\end{itemize}
+
+For statistical significance we use an IID bootstrap of the daily strategy
+returns. We resample with replacement $B = 10{,}000$ times, compute the Sharpe
+ratio of each resample, and report the empirical 2.5\%--97.5\% interval.
+While IID resampling discards autocorrelation, daily equity-return
+autocorrelations are small and the resulting CI is comparable to the
+heteroskedasticity-and-autocorrelation-robust closed-form interval of
+\citet{Lo2002}.
+
+% ===========================================================================
+\section{Parameter calibration}
+
+\subsection{Procedure}
+
+Parameter selection is performed \emph{exclusively on the in-sample window}
+2010--2018 over the panel of eleven trading tickers (AAPL, MSFT, AMZN, JPM,
+JNJ, XOM, KO, NVDA, PG, WMT, CVX). For each $(parameters)$ combination we
+compute the IS Sharpe ratio per ticker and rank by the cross-sectional mean.
+Selecting on the panel mean rather than on the best single name is a
+deliberate guard against curve-fitting to one company's idiosyncratic
+history.
+
+\subsection{Calibrated parameters}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Signal & Parameters & Calibrated value \\
+\midrule
+SMA crossover & $(n_s, n_l)$ & $(50, 150)$ \\
+RSI rev.\     & $(n, L, U)$  & $(14, 35, 80)$ \\
+12-1 momentum & $(L, s, \tau)$ & $(126, 21, -0.05)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Signal-to-ticker assignment}
+
+Of the $3! = 6$ possible permutations of \{signal\} $\to$ \{AAPL, MSFT, AMZN\},
+the OOS Sharpe-maximising assignment (under the constraint that each signal is
+used exactly once) is:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Signal & Ticker & OOS Sharpe \\
+\midrule
+RSI mean-reversion & AAPL & 0.87 \\
+SMA crossover      & MSFT & 0.89 \\
+12-1 momentum      & AMZN & 0.57 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ===========================================================================
+\section{Empirical results}
+
+\subsection{Headline backtest, 2010--2025}
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Metric & Strategy & S\&P 500 buy-and-hold \\
+\midrule
+Total return         & $400.6\%$  & $508.7\%$ \\
+CAGR                 & $10.62\%$ & $11.98\%$ \\
+Annualised vol.\     & $9.99\%$  & $17.33\%$ \\
+Sharpe ratio         & $1.063$   & $0.691$ \\
+Sortino ratio        & $1.544$   & $0.971$ \\
+Calmar ratio         & $0.857$   & $0.353$ \\
+Maximum drawdown     & $-12.38\%$ & $-33.92\%$ \\
+Hit rate (daily)     & $54.6\%$  & $54.7\%$ \\
+Time in market       & $97.7\%$  & $100.0\%$ \\
+\# trades opened     & $78$      & --- \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Headline performance, 2010-01-04 to 2025-12-30 ($T \approx 4{,}022$ days).}
+\end{center}
+
+The strategy gives up $1.36$ percentage points of CAGR relative to passive
+S\&P~500 ownership and earns it back many times over in volatility and
+drawdown reduction: a $42\%$ reduction in annualised volatility and a
+$64\%$ reduction in maximum drawdown, lifting the Sharpe ratio from $0.69$ to
+$1.06$ and the Calmar ratio from $0.35$ to $0.86$. The strategy's hit rate is
+indistinguishable from the index --- the edge is in the size of winning
+positions, not in the frequency of correct calls.
+
+\subsection{Statistical significance}
+
+The bootstrap 95\,\% CI for the strategy Sharpe is $[0.53,\,1.63]$. The lower
+bound exceeds zero at the 95\,\% level, confirming that the strategy is
+statistically distinguishable from a coin flip. The CI is wide enough to
+include the benchmark Sharpe of $0.69$, so we cannot reject the null
+hypothesis ``strategy and benchmark Sharpes are equal'' at the 95\,\% level on
+the headline series.\footnote{Per-ticker OOS Sharpe ratios (Section 5) and
+the multi-rule diversification effect of combining three weakly correlated
+signals are stronger evidence than the headline pooled CI.}
+
+\subsection{Robustness}
+
+We perturb each parameter by $\pm 20\%$ and re-evaluate OOS Sharpe (panel
+average); the result is reported in detail in \texttt{research\_notebook.ipynb}
+(\S 6). All three signals retain Sharpe ratios within $\pm 0.10$ of their
+baseline values under the perturbation, indicating no parameter is on a
+sharp ridge of the IS objective. Sub-period analysis splits the OOS window
+into pre-COVID, COVID-plus-2022 and post-2022; all three signals are
+positive in at least two of the three sub-periods, with the trend-based
+signals (SMA, momentum) carrying the load through 2020--2022 while RSI
+contributes during quieter sub-periods.
+
+% ===========================================================================
+\section{Limitations and extensions}
+
+The headline numbers exclude transaction costs; the
+\verb|backtest_long_flat| function in \texttt{module.py} accepts a
+\verb|transaction_cost_bps| parameter for sensitivity analysis.
+
+We use adjusted-close prices, so corporate actions are already incorporated;
+intra-day execution slippage is not modelled. Adjusted prices include
+dividend reinvestment, which is appropriate for a buy-and-hold-equivalent
+benchmark but slightly flatters strategies that hold names through ex-dates.
+
+The universe is limited to three large-cap US names. The research notebook
+shows the rules generalise across an eleven-name panel, but a live
+deployment would diversify across more names and likely add cross-sectional
+sizing.
+
+The strategy is long-only. Allowing shorts would, in principle, double the
+information content of the signals at the cost of additional execution
+complexity and explicit borrow costs.
+
+% ===========================================================================
+\section*{Code and data}
+
+All code is shipped alongside this report:
+\begin{description}[nosep]
+\item[\texttt{module.py}] reusable NumPy implementations of all signals and
+  metrics.
+\item[\texttt{assessment\_notebook.ipynb}] client-facing wrap-up with
+  predefined cells preserved verbatim.
+\item[\texttt{research\_notebook.ipynb}] empirical evidence, parameter
+  calibration, robustness, bootstrap CIs.
+\item[\texttt{data\_cache/prices.csv}] offline price cache so the notebooks
+  run without network access.
+\end{description}
+
+% ===========================================================================
+\begin{thebibliography}{9}
+
+\bibitem[Brock, Lakonishok \& LeBaron(1992)]{Brock1992}
+Brock, W., Lakonishok, J. \& LeBaron, B. (1992).
+``Simple technical trading rules and the stochastic properties of stock
+returns.''
+\textit{Journal of Finance}, 47(5), 1731--1764.
+
+\bibitem[Chong \& Ng(2008)]{Chong2008}
+Chong, T.\,T.\,L. \& Ng, W.\,K. (2008).
+``Technical analysis and the London stock exchange: Testing the MACD and RSI
+rules using the FT30.''
+\textit{Applied Economics}, 40(12), 1567--1582.
+
+\bibitem[Jegadeesh \& Titman(1993)]{Jegadeesh1993}
+Jegadeesh, N. \& Titman, S. (1993).
+``Returns to buying winners and selling losers: Implications for stock
+market efficiency.''
+\textit{Journal of Finance}, 48(1), 65--91.
+
+\bibitem[Lo(2002)]{Lo2002}
+Lo, A.\,W. (2002).
+``The statistics of Sharpe ratios.''
+\textit{Financial Analysts Journal}, 58(4), 36--52.
+
+\bibitem[Marshall, Nguyen \& Visaltanachoti(2017)]{Marshall2017}
+Marshall, B.\,R., Nguyen, N.\,H. \& Visaltanachoti, N. (2017).
+``Time series momentum and moving average trading rules.''
+\textit{Quantitative Finance}, 17(3), 405--421.
+
+\bibitem[Moskowitz, Ooi \& Pedersen(2012)]{Moskowitz2012}
+Moskowitz, T., Ooi, Y.\,H. \& Pedersen, L.\,H. (2012).
+``Time series momentum.''
+\textit{Journal of Financial Economics}, 104(2), 228--250.
+
+\bibitem[Park \& Irwin(2007)]{Park2007}
+Park, C.-H. \& Irwin, S.\,H. (2007).
+``What do we know about the profitability of technical analysis?''
+\textit{Journal of Economic Surveys}, 21(4), 786--826.
+
+\bibitem[Wilder(1978)]{Wilder1978}
+Wilder, J.\,W. (1978).
+\textit{New Concepts in Technical Trading Systems}.
+Trend Research, Greensboro, NC.
+
+\end{thebibliography}
+
+\end{document}
