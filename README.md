@@ -1,4 +1,4 @@
-# Computational Finance in Python — Lecture 02 Assessment
+# Computational Finance in Python: Lecture 02 Assessment
 
 Three-signal long-only equity strategy on AAPL · MSFT · AMZN with the S&P 500
 as a benchmark. Course: *Computational Finance in Python*, Universität
